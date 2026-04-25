@@ -1,12 +1,14 @@
 import os
 from dotenv import load_dotenv
-from langchain_community.document_loaders import UnstructuredMarkdownLoader, DirectoryLoader
+from langchain_community.document_loaders import UnstructuredMarkdownLoader, DirectoryLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 # UPDATED: Using the dedicated langchain_huggingface package if available, 
 # otherwise community is fine, but ensures local execution.
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Qdrant
 from qdrant_client import QdrantClient
+from langchain_qdrant import QdrantVectorStore
+from qdrant_client.http import models
 import shutil
 
 # Load environment variables
@@ -46,7 +48,7 @@ def ingest_data_with_rbac():
         loader = DirectoryLoader(
             dept_path, 
             glob="**/*.md", 
-            loader_cls=UnstructuredMarkdownLoader
+            loader_cls=TextLoader
         )
         
         try:
@@ -54,7 +56,8 @@ def ingest_data_with_rbac():
             
             # Apply Metadata Tagging
             for doc in docs:
-                doc.metadata["department"] = dept.lower()
+                doc.metadata["department"] = dept.lower().strip()
+                #key="department"
                 # Extract filename safely
                 source_path = doc.metadata.get("source", "unknown")
                 doc.metadata["source_file"] = os.path.basename(source_path)
@@ -71,11 +74,12 @@ def ingest_data_with_rbac():
     # 5. Upload to Vector Store
     if all_documents:
         print(f"🚀 Uploading {len(all_documents)} total chunks to Qdrant...")
-        Qdrant.from_documents(
+        QdrantVectorStore.from_documents(
             all_documents,
             embeddings,
             path=DB_PATH,
             collection_name=COLLECTION_NAME,
+            force_recreate=True
         )
         print("✨ Ingestion Complete. You can now start the FastAPI server.")
     else:

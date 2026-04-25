@@ -2,18 +2,20 @@ import os
 from typing import List, Dict, Any
 from langchain_groq import ChatGroq
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import Qdrant
+#from langchain_community.vectorstores import Qdrant
+from langchain_qdrant import QdrantVectorStore
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_ollama import ChatOllama
 from qdrant_client import QdrantClient
+from qdrant_client.http import models
 from dotenv import load_dotenv
 from pathlib import Path
 # point it to the root .env
-env_path = Path(__file__).resolve().parent.parent.parent / ".env"
-load_dotenv(dotenv_path=env_path)
-
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(os.path.dirname(current_dir))
+db_path = os.path.join(project_root, "qdrant_db")
 # Configuration
 COLLECTION_NAME = "finsolve_knowledge_base"
 # Llama 3.3 70B is currently the best balance of speed and logic on Groq
@@ -25,25 +27,36 @@ class LLMService:
         clean_key = "".join(raw_key.split()).replace("'", "").replace('"', "")
          # Initialize Groq LLM
         self.llm = ChatOllama(
-    model="llama3.2",
-    temperature=0
-)
+            model="llama3.2",
+            temperature=0
+        )
+        from langchain_huggingface import HuggingFaceEmbeddings
+        # Local Embeddings - ensure this matches ingest_data.py
+        self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        # Verify the collection exists
+        try:
+            count = self.client.get_collection(self.collection_name).points_count
+            print(f"✅ Success: Connected to {db_path} with {count} chunks.")
+        except Exception as e:
+            print(f"❌ DB ERROR: Collection not found! Run ingest_data.py first. Error: {e}")
         # Configuration"
         self.collection_name = COLLECTION_NAME
-
-        # Local Embeddings - ensure this matches ingest_data.py
-        #self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        
+        
         
         # Connection to your local vector store
         try:
             self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
             # Using preferential settings for local dev
-            self.client = QdrantClient(path="./qdrant_db") 
-            self.vectorstore = Qdrant(
+            self.client = QdrantClient(path=db_path) 
+            self.vectorstore = QdrantVectorStore(
                 client=self.client,
                 collection_name=self.collection_name,
-                embeddings=self.embeddings
+                embedding=self.embeddings
             )
+            # Check if data actually exists
+            collection_info = self.client.get_collection(self.collection_name)
+            print(f"✅ Success: Connected to {db_path} with {collection_info.points_count} chunks.")
             print("✅ LLM and Qdrant initialized successfully.")
         except Exception as e:
             print(f"❌ DATABASE ERROR: {e}")
@@ -64,23 +77,22 @@ class LLMService:
             formatted.append(f"SOURCE: {source}\nCONTENT: {content}\n---")
         return "\n".join(formatted)
 
-    def generate_rbac_response(self, query: str, allowed_depts: List[str], role_name: str) -> Dict[str, Any]:
-        """Executes a RAG query with metadata filtering for RBAC."""
-        
-        # 1. Setup RBAC filter
-        filter_dict = {
-            "must": [
-                {
-                    "key": "metadata.department", 
-                    "match": {"any": allowed_depts}
-                }
-            ]
-        }
+    def generate_rbac_response(self, query, allowed_depts, role_name):
+        clean_depts = [d.lower() for d in allowed_depts]
+    # Create the metadata filter for RBAC
+        search_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="department",
+                    match=models.MatchAny(any=clean_depts)
+            )
+        ]
+    )
 
-        # 2. Setup Retriever
+        # Convert vectorstore to retriever with the filter
         retriever = self.vectorstore.as_retriever(
-            search_kwargs={"filter": filter_dict, "k": 4}
-        )
+        search_kwargs={"filter": search_filter, "k": 4}
+    )
 
         # 3. Define System Prompt
         template = """
@@ -116,6 +128,16 @@ class LLMService:
         # 5. Extract results and source metadata
         # Using .invoke() instead of deprecated get_relevant_documents
         retrieved_docs = retriever.invoke(query)
+        # --- DEBUG BLOCK START ---
+        print(f"\n🔍 DEBUGGING RETRIEVAL FOR: {query}")
+        print(f"🔑 Filter depts: {allowed_depts}")
+        print(f"📦 Total chunks found: {len(retrieved_docs)}")
+
+        for i, doc in enumerate(retrieved_docs):
+            print(f"  [{i}] Source: {doc.metadata.get('source_file')}")
+            print(f"  [{i}] Dept Tag: {doc.metadata.get('department')}")
+            # print(f"  [{i}] Preview: {doc.page_content[:50]}...") # Optional: see content
+        print("--- DEBUG BLOCK END ---\n")
         sources = list(set([doc.metadata.get("source_file") for doc in retrieved_docs]))
         
         answer = rag_chain.invoke(query)

@@ -8,6 +8,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_ollama import ChatOllama
+from langchain_huggingface import HuggingFaceEmbeddings
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from dotenv import load_dotenv
@@ -23,16 +24,16 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 
 class LLMService:
     def __init__(self):
-        raw_key = os.environ.get("GROQ_API_KEY", "")
-        clean_key = "".join(raw_key.split()).replace("'", "").replace('"', "")
-         # Initialize Groq LLM
-        self.llm = ChatOllama(
-            model="llama3.2",
-            temperature=0
-        )
-        from langchain_huggingface import HuggingFaceEmbeddings
-        # Local Embeddings - ensure this matches ingest_data.py
+        #raw_key = os.environ.get("GROQ_API_KEY", "")
+        #clean_key = "".join(raw_key.split()).replace("'", "").replace('"', "")
+        # 1. Initialize LLM and Embeddings
+        self.llm = ChatOllama(model="llama3.2", temperature=0)
         self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        self.collection_name = COLLECTION_NAME
+        
+        
+        # Local Embeddings - ensure this matches ingest_data.py
+        #self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
         # Verify the collection exists
         try:
             count = self.client.get_collection(self.collection_name).points_count
@@ -46,17 +47,20 @@ class LLMService:
         
         # Connection to your local vector store
         try:
-            self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+            #self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
             # Using preferential settings for local dev
             self.client = QdrantClient(path=db_path) 
+           
+            # Check if data actually exists
+            collection_info = self.client.get_collection(self.collection_name)
+            count = collection_info.points_count
             self.vectorstore = QdrantVectorStore(
                 client=self.client,
                 collection_name=self.collection_name,
                 embedding=self.embeddings
             )
-            # Check if data actually exists
-            collection_info = self.client.get_collection(self.collection_name)
-            print(f"✅ Success: Connected to {db_path} with {collection_info.points_count} chunks.")
+            print(f"✅ Success: Connected to {db_path} with {count} chunks.")
+
             print("✅ LLM and Qdrant initialized successfully.")
         except Exception as e:
             print(f"❌ DATABASE ERROR: {e}")
@@ -78,7 +82,7 @@ class LLMService:
         return "\n".join(formatted)
 
     def generate_rbac_response(self, query, allowed_depts, role_name):
-        clean_depts = [d.lower() for d in allowed_depts]
+        clean_depts = [d.lower().strip() for d in allowed_depts]
     # Create the metadata filter for RBAC
         search_filter = models.Filter(
             must=[
@@ -91,7 +95,7 @@ class LLMService:
 
         # Convert vectorstore to retriever with the filter
         retriever = self.vectorstore.as_retriever(
-        search_kwargs={"filter": search_filter, "k": 4}
+        search_kwargs={"filter": search_filter, "k": 5}
     )
 
         # 3. Define System Prompt

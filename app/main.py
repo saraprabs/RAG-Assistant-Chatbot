@@ -15,19 +15,19 @@ env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 # Verify the key is actually there before starting the API
-if not os.getenv("GROQ_API_KEY"):
-    print("❌ FATAL ERROR: GROQ_API_KEY is missing from environment!")
-else:
-    print(f"✅ GROQ_API_KEY detected: {os.getenv('GROQ_API_KEY')[:6]}...")
+# if not os.getenv("GROQ_API_KEY"):
+#     print("❌ FATAL ERROR: GROQ_API_KEY is missing from environment!")
+# else:
+#     print(f"✅ GROQ_API_KEY detected: {os.getenv('GROQ_API_KEY')[:6]}...")
 # 1. Define the Role-to-Metadata Mapping
 # This is the "Source of Truth" for your RBAC
 ROLE_DATA_MAPPING: Dict[str, List[str]] = {
-    "engineering": ["engineering", "general","Engineering","General"],
-    "marketing": ["marketing", "general","Marketing","General"],
-    "finance": ["finance", "general","Finance","General"],
-    "hr": ["hr", "general","HR", "General"],
+    "engineering": ["engineering", "general"],
+    "marketing": ["marketing", "general"],
+    "finance": ["finance", "general"],
+    "hr": ["hr", "general","HR"],
     "c_level": ["engineering", "marketing", "finance", "hr", "general"],
-    "employee": ["general","General"]
+    "employee": ["general"]
 }
 
 # Dummy user database
@@ -72,7 +72,7 @@ async def query_chatbot(message: str, user=Depends(authenticate)):
     user_role = user["role"]
     
     # Identify which departments this user is allowed to "see"
-    allowed_depts = ROLE_DATA_MAPPING.get(user_role, ["general"])
+    allowed_depts = ROLE_DATA_MAPPING.get(user_role.lower(), ["general"])
     
     try:
         # Pass the query and the role-based filter to the RAG service
@@ -85,6 +85,7 @@ async def query_chatbot(message: str, user=Depends(authenticate)):
         return {
             "username": user["username"],
             "role": user_role,
+            "authorized_access": allowed_depts,
             "answer": result["answer"],
             "sources": result["sources"]
         }

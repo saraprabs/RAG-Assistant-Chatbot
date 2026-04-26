@@ -44,44 +44,80 @@ def ingest_data_with_rbac():
 
     for dept in departments:
         dept_path = os.path.join(BASE_DATA_DIR, dept)
-        
+        dept_tag = dept.lower().strip()
         loader = DirectoryLoader(
             dept_path, 
             glob="**/*.md", 
-            loader_cls=TextLoader
+            loader_cls=TextLoader,
+            loader_kwargs={'encoding': 'utf-8'}
         )
         
         try:
             docs = loader.load()
             
             # Apply Metadata Tagging
-            for doc in docs:
-                doc.metadata["department"] = dept.lower().strip()
-                #key="department"
-                # Extract filename safely
-                source_path = doc.metadata.get("source", "unknown")
-                doc.metadata["source_file"] = os.path.basename(source_path)
+            # for doc in docs:
+            #     doc.metadata["department"] = dept.lower().strip()
+            #     #key="department"
+            #     # Extract filename safely
+            #     source_path = doc.metadata.get("source", "unknown")
+            #     doc.metadata["source_file"] = os.path.basename(source_path)
                 
             # Chunking Logic
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-            chunked_docs = text_splitter.split_documents(docs)
+            for doc in docs:
+                # Extract filename for source tracking
+                source_path = doc.metadata.get("source", "unknown")
+                filename = os.path.basename(source_path)
+                
+                # Split the document into chunks
+                chunks = text_splitter.split_documents([doc])
+                # 4. MANUALLY ASSIGN METADATA TO EVERY CHUNK
+                # This is the step that was likely missing or failing
+                for chunk in chunks:
+                    chunk.metadata["department"] = dept_tag
+                    chunk.metadata["source_file"] = filename
             
-            all_documents.extend(chunked_docs)
-            print(f"✅ Processed {len(chunked_docs)} chunks for {dept}")
+                all_documents.extend(chunks)
+                        
+            print(f"✅ Processed {len(docs)} files into {len(chunks)} chunks for: {dept_tag}")
+
         except Exception as e:
             print(f"⚠️ Skipping {dept} due to error: {e}")
 
     # 5. Upload to Vector Store
     if all_documents:
         print(f"🚀 Uploading {len(all_documents)} total chunks to Qdrant...")
-        QdrantVectorStore.from_documents(
-            all_documents,
-            embeddings,
-            path=DB_PATH,
+        
+        # Initialize the raw client
+        client = QdrantClient(path=DB_PATH)
+        
+        # 1. Clear the collection to ensure a fresh schema
+        client.recreate_collection(
             collection_name=COLLECTION_NAME,
-            force_recreate=True
+            vectors_config=models.VectorParams(size=384, distance=models.Distance.COSINE),
         )
-        print("✨ Ingestion Complete. You can now start the FastAPI server.")
+
+        # 2. Extract vectors and upload manually
+        # We do this to ensure the payload is EXACTLY what we want
+        for i, doc in enumerate(all_documents):
+            vector = embeddings.embed_query(doc.page_content)
+            client.upsert(
+                collection_name=COLLECTION_NAME,
+                points=[
+                    models.PointStruct(
+                        id=i,
+                        vector=vector,
+                        payload={
+                            "page_content": doc.page_content,
+                            "metadata": doc.metadata, # LangChain style nesting
+                            "department": doc.metadata.get("department"), # Direct access for filtering
+                            "source_file": doc.metadata.get("source_file")
+                        }
+                    )
+                ]
+            )
+        print("✨ Ingestion Complete via Direct Client.")
     else:
         print("❌ No documents found to ingest.")
 
